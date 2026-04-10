@@ -190,36 +190,35 @@ public class EverMediaBootstrapTask : IScheduledTask
                         // 检查取消令牌（在获取到并发许可后再次检查）
                         if (cancellationToken.IsCancellationRequested) return;
 
-                        // --- Config-based Rate Limiting Logic (with thread-safe lock) ---
-                        if (rateLimitInterval > TimeSpan.Zero)
+                        // 速率限制仅在需要发起真实网络探测时调用
+                        Func<Task> ApplyRateLimitAsync = async () =>
                         {
+                            if (rateLimitInterval <= TimeSpan.Zero) return;
+
                             TimeSpan timeToWait;
                             lock (_rateLimitLock)
                             {
                                 DateTimeOffset now = DateTimeOffset.UtcNow;
                                 TimeSpan timeElapsed = now - lastProbeStart;
-                                
+
                                 if (timeElapsed >= rateLimitInterval)
                                 {
-                                    // 距离上次探测已经超过间隔，无需等待，直接占用当前时间槽
                                     timeToWait = TimeSpan.Zero;
                                     lastProbeStart = now;
                                 }
                                 else
                                 {
-                                    // 距离上次探测太近，必须等待。计算等待时间并预订未来的时间槽
                                     timeToWait = rateLimitInterval - timeElapsed;
                                     lastProbeStart = lastProbeStart + rateLimitInterval;
                                 }
                             }
-                        
+
                             if (timeToWait > TimeSpan.Zero)
                             {
                                 _logger.Debug($"[EverMedia] BootstrapTask: Waiting {timeToWait.TotalMilliseconds:F0}ms before processing {item.Path} to respect rate limit.");
                                 await Task.Delay(timeToWait, cancellationToken);
                             }
-                        }
-                        // --- End of Rate Limiting Logic ---
+                        };
 
                         _logger.Debug($"[EverMedia] BootstrapTask: Processing .strm file: {item.Path} (DateLastSaved: {item.DateLastSaved:O})");
 
@@ -255,6 +254,8 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 {
                                     _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Deleting medinfo and triggering probe.");
                                     try { _fileSystem.DeleteFile(medInfoPath); } catch { }
+                                    
+                                    await ApplyRateLimitAsync();
                                     await item.RefreshMetadata(refreshOptions, cancellationToken);
                                     Interlocked.Increment(ref probedCount);
                                 }
@@ -275,6 +276,7 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 _logger.Info($"[EverMedia] BootstrapTask: No MediaInfo found for {item.Path} and no .medinfo file. Attempting probe.");
                                 // 没有 MediaStreams 且没有 .medinfo 文件：触发探测
                                 // 使用预先创建的 MetadataRefreshOptions 来触发探测
+                                await ApplyRateLimitAsync();
                                 await item.RefreshMetadata(refreshOptions, cancellationToken);
                                 
                                 // 探测成功后，ItemUpdated 事件会被触发，EventListener 会处理备份
