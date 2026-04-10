@@ -256,17 +256,10 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 
                                 if (currentSubCount != savedSubCount)
                                 {
-                                    _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Updating backup.");
-                                    var backupResult = await _everMediaService.BackupAsync(item);
-                                    if (backupResult)
-                                    {
-                                        Interlocked.Increment(ref backedUpCount);
-                                        _logger.Info($"[EverMedia] BootstrapTask: Successfully backed up updated MediaInfo for {item.Path}.");
-                                    }
-                                    else
-                                    {
-                                        _logger.Warn($"[EverMedia] BootstrapTask: Failed to update MediaInfo backup for {item.Path}.");
-                                    }
+                                    _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Deleting medinfo and triggering probe.");
+                                    try { _fileSystem.DeleteFile(medInfoPath); } catch { }
+                                    await item.RefreshMetadata(refreshOptions, cancellationToken);
+                                    Interlocked.Increment(ref probedCount);
                                 }
                                 else
                                 {

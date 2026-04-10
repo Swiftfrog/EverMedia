@@ -121,6 +121,21 @@ public class EverMediaEventListener : IAsyncDisposable
             var mediaStreams = item.GetMediaStreams();
             var hasVideoOrAudio = mediaStreams?.Any(s => s.Type == MediaStreamType.Video || s.Type == MediaStreamType.Audio) == true;
 
+            // --- 优先判断：如果存在备份，检查字幕是否发生变化 ---
+            if (medInfoExists)
+            {
+                int savedExternalCount = _everMediaService.GetSavedExternalSubCount(item);
+                int currentExternalCount = mediaStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
+
+                if (currentExternalCount != savedExternalCount)
+                {
+                    _logger.Info($"[EverMedia] Worker-{workerId}: Subtitle mismatch for {item.Name} (Saved: {savedExternalCount}, Current: {currentExternalCount}). Probing.");
+                    try { _fileSystem.DeleteFile(medInfoPath); } catch { }
+                    await HandleProbeWithRetryAsync(item, config, workerId);
+                    return; // 结束，等待探测完成后的事件
+                }
+            }
+
             // --- 场景 1: 恢复 ---
             if (!hasVideoOrAudio && medInfoExists)
             {
@@ -140,18 +155,8 @@ public class EverMediaEventListener : IAsyncDisposable
             {
                  await HandleProbeWithRetryAsync(item, config, workerId);
             }
-            // --- 场景 4: 存在数据 && 存在备份 (稳态，检查字幕是否变化) ---
-            else if (hasVideoOrAudio && medInfoExists)
+            else
             {
-                int savedExternalCount = _everMediaService.GetSavedExternalSubCount(item);
-                int currentExternalCount = mediaStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
-
-                if (currentExternalCount != savedExternalCount)
-                {
-                    _logger.Info($"[EverMedia] Worker-{workerId}: Subtitle change detected for {item.Name}. Updating backup.");
-                    await _everMediaService.BackupAsync(item);
-                }
-                
                 _probeFailureTracker.TryRemove(item.Id, out _);
             }
         }

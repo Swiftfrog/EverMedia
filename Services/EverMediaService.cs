@@ -230,22 +230,9 @@ public class EverMediaService
             }
     
             var streamsToSave = mediaSourceInfo.MediaStreams?.ToList() ?? new List<MediaStream>();
-            
-            // --- FIX:保留 Emby 最新搜刮到的真实外挂字幕 ---
-            // 当探测失败触发恢复时，Emby实际已经正确挂载了新增的字幕。
-            // 必须剔除旧备份里的外挂字幕，将现有的真实字幕混入恢复列表中，否则新字幕会被覆盖。
-            var currentStreams = item.GetMediaStreams() ?? new List<MediaStream>();
-            var realExternalSubs = currentStreams.Where(s => s.IsExternal && s.Type == MediaStreamType.Subtitle).ToList();
-
-            streamsToSave.RemoveAll(s => s.IsExternal && s.Type == MediaStreamType.Subtitle);
-            streamsToSave.AddRange(realExternalSubs);
-            
             foreach (var stream in streamsToSave.Where(s => s.IsExternal && s.Type == MediaStreamType.Subtitle && s.Path != null))
             {
-                if (!Path.IsPathRooted(stream.Path))
-                {
-                    stream.Path = Path.Combine(item.ContainingFolderPath, stream.Path);
-                }
+                stream.Path = Path.Combine(item.ContainingFolderPath, stream.Path);
             }
     
             _logger.Debug($"[EverMedia] Service: Saving {streamsToSave.Count} media streams for item: {item.Name ?? item.Path}");
