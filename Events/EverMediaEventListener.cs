@@ -124,21 +124,9 @@ public class EverMediaEventListener : IAsyncDisposable
             // --- 场景 1: 恢复 ---
             if (!hasVideoOrAudio && medInfoExists)
             {
-                int savedExternalCount = _everMediaService.GetSavedExternalSubCount(item);
-                int currentExternalCount = mediaStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
-
-                if (currentExternalCount != savedExternalCount)
-                {
-                    _logger.Info($"[EverMedia] Worker-{workerId}: Subtitle mismatch for {item.Name}. Probing.");
-                    try { _fileSystem.DeleteFile(medInfoPath); } catch { }
-                    await HandleProbeWithRetryAsync(item, config, workerId);
-                }
-                else
-                {
-                    _logger.Info($"[EverMedia] Worker-{workerId}: Restoring {item.Name}.");
-                    await _everMediaService.RestoreAsync(item);
-                    _probeFailureTracker.TryRemove(item.Id, out _);
-                }
+                _logger.Info($"[EverMedia] Worker-{workerId}: Restoring {item.Name} from backup.");
+                await _everMediaService.RestoreAsync(item);
+                _probeFailureTracker.TryRemove(item.Id, out _);
             }
             // --- 场景 2: 备份 ---
             else if (hasVideoOrAudio && !medInfoExists)
@@ -152,8 +140,18 @@ public class EverMediaEventListener : IAsyncDisposable
             {
                  await HandleProbeWithRetryAsync(item, config, workerId);
             }
-            else
+            // --- 场景 4: 存在数据 && 存在备份 (稳态，检查字幕是否变化) ---
+            else if (hasVideoOrAudio && medInfoExists)
             {
+                int savedExternalCount = _everMediaService.GetSavedExternalSubCount(item);
+                int currentExternalCount = mediaStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
+
+                if (currentExternalCount != savedExternalCount)
+                {
+                    _logger.Info($"[EverMedia] Worker-{workerId}: Subtitle change detected for {item.Name}. Updating backup.");
+                    await _everMediaService.BackupAsync(item);
+                }
+                
                 _probeFailureTracker.TryRemove(item.Id, out _);
             }
         }

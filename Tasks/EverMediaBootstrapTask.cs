@@ -228,31 +228,58 @@ public class EverMediaBootstrapTask : IScheduledTask
 
                         // 检查是否存在 .medinfo 文件
                         string medInfoPath = _everMediaService.GetMedInfoPath(item);
+                        bool hasMediaInfo = item.GetMediaStreams()?.Any(i => i.Type == MediaStreamType.Video || i.Type == MediaStreamType.Audio) ?? false;
 
                         if (_fileSystem.FileExists(medInfoPath))
                         {
-                            _logger.Info($"[EverMedia] BootstrapTask: Found .medinfo file for {item.Path}. Attempting restore.");
-                            
-                            // 存在 .medinfo 文件：尝试恢复 (自愈)
-                            var restoreResult = await _everMediaService.RestoreAsync(item);
-                            if (restoreResult)
+                            if (!hasMediaInfo)
                             {
-                                restoredCount++;
-                                _logger.Info($"[EverMedia] BootstrapTask: Successfully restored MediaInfo for {item.Path}.");
+                                _logger.Info($"[EverMedia] BootstrapTask: Found .medinfo file but no MediaInfo for {item.Path}. Attempting restore.");
+                                
+                                // 存在 .medinfo 文件且媒体信息丢失：尝试恢复 (自愈)
+                                var restoreResult = await _everMediaService.RestoreAsync(item);
+                                if (restoreResult)
+                                {
+                                    Interlocked.Increment(ref restoredCount);
+                                    _logger.Info($"[EverMedia] BootstrapTask: Successfully restored MediaInfo for {item.Path}.");
+                                }
+                                else
+                                {
+                                    _logger.Warn($"[EverMedia] BootstrapTask: Failed to restore MediaInfo for {item.Path}.");
+                                }
                             }
                             else
                             {
-                                _logger.Warn($"[EverMedia] BootstrapTask: Failed to restore MediaInfo for {item.Path}.");
+                                // Emby有源数据且有medinfo备份，检查是否是字幕发生变化
+                                int savedSubCount = _everMediaService.GetSavedExternalSubCount(item);
+                                int currentSubCount = item.GetMediaStreams()?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
+                                
+                                if (currentSubCount != savedSubCount)
+                                {
+                                    _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Updating backup.");
+                                    var backupResult = await _everMediaService.BackupAsync(item);
+                                    if (backupResult)
+                                    {
+                                        Interlocked.Increment(ref backedUpCount);
+                                        _logger.Info($"[EverMedia] BootstrapTask: Successfully backed up updated MediaInfo for {item.Path}.");
+                                    }
+                                    else
+                                    {
+                                        _logger.Warn($"[EverMedia] BootstrapTask: Failed to update MediaInfo backup for {item.Path}.");
+                                    }
+                                }
+                                else
+                                {
+                                    _logger.Debug($"[EverMedia] BootstrapTask: {item.Path} is up-to-date. Skipping.");
+                                    Interlocked.Increment(ref skippedCount);
+                                }
                             }
                         }
                         else
                         {
                             _logger.Debug($"[EverMedia] BootstrapTask: No .medinfo file found for {item.Path}.");
                             
-                            // 不存在 .medinfo 文件：检查是否已有 MediaStreams
-                            // 使用 item.GetMediaStreams() 来获取最新状态，参考 MediaInfoEventListener
-                            bool hasMediaInfo = item.GetMediaStreams()?.Any(i => i.Type == MediaStreamType.Video || i.Type == MediaStreamType.Audio) ?? false;
-
+                            // 不存在 .medinfo 文件：
                             if (!hasMediaInfo)
                             {
                                 _logger.Info($"[EverMedia] BootstrapTask: No MediaInfo found for {item.Path} and no .medinfo file. Attempting probe.");
@@ -261,7 +288,7 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 await item.RefreshMetadata(refreshOptions, cancellationToken);
                                 
                                 // 探测成功后，ItemUpdated 事件会被触发，EventListener 会处理备份
-                                probedCount++;
+                                Interlocked.Increment(ref probedCount);
                                 _logger.Info($"[EverMedia] BootstrapTask: Probe initiated for {item.Path}. Event listener will handle backup if successful.");
                             }
                             else
@@ -271,7 +298,7 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 var backupResult = await _everMediaService.BackupAsync(item);
                                 if (backupResult)
                                 {
-                                    backedUpCount++;
+                                    Interlocked.Increment(ref backedUpCount);
                                     _logger.Info($"[EverMedia] BootstrapTask: Successfully backed up MediaInfo for {item.Path}.");
                                 }
                                 else
