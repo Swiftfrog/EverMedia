@@ -135,8 +135,7 @@ public class EverMediaService
 
             // 计算当前的外挂字幕数量
             var allStreams = item.GetMediaStreams();
-            int externalSubCount = allStreams
-                .Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal);
+            int externalSubCount = allStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
             _logger.Debug($"[EverMedia] Service: Found {externalSubCount} external subtitles to save in backup for {item.Name}");
 
             var backupData = new

@@ -223,29 +223,39 @@ public class EverMediaEventListener : IAsyncDisposable
 
     public async void OnItemUpdated(object? sender, ItemChangeEventArgs e)
     {
-        if (e.Item is BaseItem item && item.Path != null && item.Path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var itemId = item.Id;
-            if (_debounceTokens.TryGetValue(itemId, out var existingCts))
+            if (e.Item is BaseItem item && item.Path != null && item.Path.EndsWith(".strm", StringComparison.OrdinalIgnoreCase))
             {
-                existingCts.Cancel();
-                existingCts.Dispose();
-            }
+                var itemId = item.Id;
+                if (_debounceTokens.TryGetValue(itemId, out var existingCts))
+                {
+                    try { existingCts.Cancel(); existingCts.Dispose(); } catch { }
+                }
 
-            var newCts = new CancellationTokenSource();
-            _debounceTokens[itemId] = newCts;
+                var newCts = new CancellationTokenSource();
+                _debounceTokens[itemId] = newCts;
 
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1), newCts.Token);
-                EnqueueItem(item);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), newCts.Token);
+                    EnqueueItem(item);
+                }
+                catch (OperationCanceledException) { }
+                finally
+                {
+                    // 仅移除由当前任务创建的 token，防止被覆盖后错误移除他人的 token
+                    if (_debounceTokens.TryGetValue(itemId, out var currentCts) && currentCts == newCts)
+                    {
+                        _debounceTokens.TryRemove(itemId, out _);
+                    }
+                    newCts.Dispose();
+                }
             }
-            catch (OperationCanceledException) { }
-            finally
-            {
-                _debounceTokens.TryRemove(itemId, out _);
-                newCts.Dispose();
-            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"[EverMedia] Error in OnItemUpdated for {e.Item?.Name}: {ex}");
         }
     }
 

@@ -193,33 +193,30 @@ public class EverMediaBootstrapTask : IScheduledTask
                         // --- Config-based Rate Limiting Logic (with thread-safe lock) ---
                         if (rateLimitInterval > TimeSpan.Zero)
                         {
-                            DateTimeOffset now;
-                            TimeSpan timeElapsed, timeToWait;
-                        
+                            TimeSpan timeToWait;
                             lock (_rateLimitLock)
                             {
-                                now = DateTimeOffset.UtcNow;
-                                timeElapsed = now - lastProbeStart;
-                                timeToWait = rateLimitInterval - timeElapsed;
+                                DateTimeOffset now = DateTimeOffset.UtcNow;
+                                TimeSpan timeElapsed = now - lastProbeStart;
+                                
+                                if (timeElapsed >= rateLimitInterval)
+                                {
+                                    // 距离上次探测已经超过间隔，无需等待，直接占用当前时间槽
+                                    timeToWait = TimeSpan.Zero;
+                                    lastProbeStart = now;
+                                }
+                                else
+                                {
+                                    // 距离上次探测太近，必须等待。计算等待时间并预订未来的时间槽
+                                    timeToWait = rateLimitInterval - timeElapsed;
+                                    lastProbeStart = lastProbeStart + rateLimitInterval;
+                                }
                             }
                         
                             if (timeToWait > TimeSpan.Zero)
                             {
-                                _logger.Debug($"[EverMedia] BootstrapTask: Waiting {timeToWait.TotalMilliseconds:F0}ms before probing {item.Path} to respect rate limit.");
+                                _logger.Debug($"[EverMedia] BootstrapTask: Waiting {timeToWait.TotalMilliseconds:F0}ms before processing {item.Path} to respect rate limit.");
                                 await Task.Delay(timeToWait, cancellationToken);
-                            }
-                        
-                            // 更新 lastProbeStart
-                            lock (_rateLimitLock)
-                            {
-                                lastProbeStart = DateTimeOffset.UtcNow;
-                            }
-                        }
-                        else
-                        {
-                            lock (_rateLimitLock)
-                            {
-                                lastProbeStart = DateTimeOffset.UtcNow;
                             }
                         }
                         // --- End of Rate Limiting Logic ---
@@ -324,11 +321,11 @@ public class EverMediaBootstrapTask : IScheduledTask
             var totalProcessed = restoredCount + probedCount + backedUpCount + skippedCount;
             _logger.Info($"[EverMedia] BootstrapTask: Task execution completed. Total .strm files processed: {totalProcessed}. Restored from .medinfo: {restoredCount}, Probed for new meta {probedCount}, Backup for media info existed: {backedUpCount},  Skipped: {skippedCount}.");
 
-            // 在任务成功完成后，记录一个稍晚于当前时间的时间戳作为下一次运行的基准·
-            // 硬编码增加 1 秒偏移量，确保下一次查询起点晚于本次任务结束时间
-            var taskCompletionTime = DateTime.UtcNow.AddSeconds(1); // 记录并增加偏移
-            Plugin.Instance.UpdateLastBootstrapTaskRun(taskCompletionTime); // 使用增加偏移后的时间更新配置
-            _logger.Info($"[EverMedia] BootstrapTask: Last run timestamp updated to task completion time: {taskCompletionTime:O} via Plugin.Instance.");
+            // 在任务成功完成后，记录任务**开始时**的时间戳作为下一次运行的基准。
+            // 使用开始时间而不是结束时间，可以确保在此任务运行期间（这可能需要几个小时）修改或添加的项目
+            // 不会在下一次增量查询中被漏掉。
+            Plugin.Instance.UpdateLastBootstrapTaskRun(taskStartTime);
+            _logger.Info($"[EverMedia] BootstrapTask: Last run timestamp updated to task start time: {taskStartTime:O} via Plugin.Instance.");
 
         }
         catch (OperationCanceledException)
