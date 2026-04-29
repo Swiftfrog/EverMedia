@@ -14,7 +14,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using LiteDB;
+using System.Data;
 using MediaBrowser.Common.Configuration;
 
 namespace EverMedia.Services;
@@ -33,6 +33,7 @@ public class EverMediaService
 
     private Plugin? _cachedPlugin;
     private readonly string _dbPath;
+    private readonly ISqliteConnectionFactory _sqliteConnectionFactory;
 
     public EverMediaService(
         ILogManager logManager,
@@ -42,7 +43,8 @@ public class EverMediaService
         IFileSystem fileSystem,
         IJsonSerializer jsonSerializer,
         IServerApplicationHost applicationHost,
-        IApplicationPaths applicationPaths)
+        IApplicationPaths applicationPaths,
+        ISqliteConnectionFactory sqliteConnectionFactory)
     {
         _logger = logManager.GetLogger(GetType().Name);
         _libraryManager = libraryManager;
@@ -52,6 +54,7 @@ public class EverMediaService
         _jsonSerializer = jsonSerializer;
         _applicationHost = applicationHost;
         _applicationPaths = applicationPaths;
+        _sqliteConnectionFactory = sqliteConnectionFactory;
         
         _dbPath = Path.Combine(_applicationPaths.PluginConfigurationsPath, "EverMedia.db");
         InitializeDatabase();
@@ -71,16 +74,38 @@ public class EverMediaService
     {
         try
         {
-            using (var db = new LiteDatabase(_dbPath))
+            using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
             {
-                var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                col.EnsureIndex(x => x.Id);
+                connection.Open();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+                        PRAGMA journal_mode=WAL;
+                        PRAGMA synchronous=NORMAL;
+
+                        CREATE TABLE IF NOT EXISTS MediaInfo (
+                            InternalId INTEGER PRIMARY KEY,
+                            Path TEXT,
+                            BackupData TEXT,
+                            ExternalSubCount INTEGER,
+                            LastUpdated INTEGER
+                        );";
+                    command.ExecuteNonQuery();
+                }
             }
         }
         catch (Exception ex)
         {
-            _logger.Error($"[EverMedia] Service: Failed to initialize LiteDB: {ex.Message}");
+            _logger.Error($"[EverMedia] Service: Failed to initialize SQLite Database: {ex.Message}");
         }
+    }
+
+    private void AddParameter(IDbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     public async Task<bool> HasBackupAsync(BaseItem item)
@@ -90,15 +115,21 @@ public class EverMediaService
         {
             try
             {
-                using (var db = new LiteDatabase(_dbPath))
+                using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
                 {
-                    var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                    return col.Exists(x => x.Id == item.InternalId);
+                    connection.Open();
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = "SELECT 1 FROM MediaInfo WHERE InternalId = @InternalId";
+                        AddParameter(command, "@InternalId", item.InternalId);
+                        var result = command.ExecuteScalar();
+                        return result != null;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error($"[EverMedia] Service: HasBackupAsync LiteDB Error: {ex.Message}");
+                _logger.Error($"[EverMedia] Service: HasBackupAsync DB Error: {ex.Message}");
                 return false;
             }
         }
@@ -115,15 +146,20 @@ public class EverMediaService
         {
             try
             {
-                using (var db = new LiteDatabase(_dbPath))
+                using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
                 {
-                    var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                    col.Delete(item.InternalId);
+                    connection.Open();
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = "DELETE FROM MediaInfo WHERE InternalId = @InternalId";
+                        AddParameter(command, "@InternalId", item.InternalId);
+                        command.ExecuteNonQuery();
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error($"[EverMedia] Service: DeleteBackupAsync LiteDB Error: {ex.Message}");
+                _logger.Error($"[EverMedia] Service: DeleteBackupAsync DB Error: {ex.Message}");
             }
         }
         else
@@ -216,26 +252,37 @@ public class EverMediaService
 
             if (config.BackupMode == BackupMode.Centralized)
             {
+                var jsonString = _jsonSerializer.SerializeToString(backupData);
                 try
                 {
-                    using (var db = new LiteDatabase(_dbPath))
+                    using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
                     {
-                        var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                        var record = new LiteDbRecord
+                        connection.Open();
+                        using (var command = connection.CreateCommand())
                         {
-                            Id = item.InternalId,
-                            Path = item.Path ?? string.Empty,
-                            BackupData = backupData,
-                            ExternalSubCount = externalSubCount,
-                            LastUpdated = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-                        };
-                        col.Upsert(record);
-                        _logger.Info($"[EverMedia] Service: Backup completed (LiteDB) for item: {item.Name ?? item.Path}");
+                            command.CommandText = @"
+                                INSERT INTO MediaInfo (InternalId, Path, BackupData, ExternalSubCount, LastUpdated) 
+                                VALUES (@InternalId, @Path, @BackupData, @SubCount, @DateUpdated)
+                                ON CONFLICT(InternalId) DO UPDATE SET 
+                                    Path=excluded.Path,
+                                    BackupData=excluded.BackupData,
+                                    ExternalSubCount=excluded.ExternalSubCount,
+                                    LastUpdated=excluded.LastUpdated;";
+                            
+                            AddParameter(command, "@InternalId", item.InternalId);
+                            AddParameter(command, "@Path", item.Path ?? string.Empty);
+                            AddParameter(command, "@BackupData", jsonString);
+                            AddParameter(command, "@SubCount", externalSubCount);
+                            AddParameter(command, "@DateUpdated", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                            
+                            command.ExecuteNonQuery();
+                        }
+                        _logger.Info($"[EverMedia] Service: Backup completed (Centralized DB) for item: {item.Name ?? item.Path}");
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"[EverMedia] Service: BackupAsync LiteDB Error: {ex.Message}");
+                    _logger.Error($"[EverMedia] Service: BackupAsync DB Error: {ex.Message}");
                     return false;
                 }
             }
@@ -282,25 +329,37 @@ public class EverMediaService
             {
                 try
                 {
-                    using (var db = new LiteDatabase(_dbPath))
+                    using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
                     {
-                        var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                        var record = col.FindById(item.InternalId);
-                        if (record != null)
+                        connection.Open();
+                        using (var command = connection.CreateCommand())
                         {
-                            backupDto = record.BackupData;
+                            command.CommandText = "SELECT BackupData FROM MediaInfo WHERE InternalId = @InternalId";
+                            AddParameter(command, "@InternalId", item.InternalId);
+                            
+                            using (var reader = command.ExecuteReader())
+                            {
+                                if (reader.Read())
+                                {
+                                    var jsonString = reader.GetString(0);
+                                    if (!string.IsNullOrEmpty(jsonString))
+                                    {
+                                        backupDto = _jsonSerializer.DeserializeFromString<BackupDto>(jsonString);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error($"[EverMedia] Service: RestoreAsync LiteDB Error: {ex.Message}");
+                    _logger.Error($"[EverMedia] Service: RestoreAsync DB Error: {ex.Message}");
                     return false;
                 }
 
                 if (backupDto == null)
                 {
-                    _logger.Info($"[EverMedia] Service: No medinfo found in LiteDB for item: {item.Name ?? item.Path}.");
+                    _logger.Info($"[EverMedia] Service: No medinfo found in DB for item: {item.Name ?? item.Path}.");
                     return false;
                 }
             }
@@ -412,16 +471,26 @@ public class EverMediaService
         {
             try
             {
-                using (var db = new LiteDatabase(_dbPath))
+                using (var connection = _sqliteConnectionFactory.CreateConnection(_dbPath))
                 {
-                    var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                    var record = col.FindById(item.InternalId);
-                    return record?.ExternalSubCount ?? 0;
+                    connection.Open();
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = "SELECT ExternalSubCount FROM MediaInfo WHERE InternalId = @InternalId";
+                        AddParameter(command, "@InternalId", item.InternalId);
+                        
+                        var result = command.ExecuteScalar();
+                        if (result != null && result != DBNull.Value)
+                        {
+                            return Convert.ToInt32(result);
+                        }
+                        return 0;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.Error($"[EverMedia] Service: GetSavedExternalSubCount LiteDB Error: {ex.Message}");
+                _logger.Error($"[EverMedia] Service: GetSavedExternalSubCount DB Error: {ex.Message}");
                 return 0;
             }
         }
@@ -457,16 +526,6 @@ public class EverMediaService
         public string? PluginVersion { get; set; }
         public int ExternalSubtitleCount { get; set; }
         public MediaSourceWithChapters[] Data { get; set; } = Array.Empty<MediaSourceWithChapters>();
-    }
-
-    public class LiteDbRecord
-    {
-        [BsonId]
-        public long Id { get; set; }
-        public string Path { get; set; } = string.Empty;
-        public BackupDto BackupData { get; set; } = new BackupDto();
-        public int ExternalSubCount { get; set; }
-        public long LastUpdated { get; set; }
     }
 
     public class MediaSourceWithChapters
