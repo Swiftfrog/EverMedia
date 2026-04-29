@@ -21,8 +21,10 @@ public class EverMediaConfig : EditableOptionsBase
     [Description("选择存储方式。SideBySide: 与 .strm 文件同级目录存放 .medinfo 文件；Centralized: 统一存储在插件内置的高性能 LiteDB 数据库中。")]
     public BackupMode BackupMode { get; set; } = BackupMode.SideBySide;
 
-    // 弃用：不再需要手动设置集中存储路径，统一存放在 Emby 插件数据目录下
-    // public string CentralizedRootPath { get; set; } = "";
+    [DisplayName("旧数据迁移目录")]
+    [Description("【仅用于迁移任务】如果您以前使用的是独立文件夹存放 .medinfo 文件，请在这里填写旧的集中存放路径。")]
+    [EditFolderPicker]
+    public string CentralizedRootPath { get; set; } = "";
 
     // [DisplayName("启用孤立文件清理");
     // [Description("清理不再有对应 .strm 文件的 .medinfo 文件。");

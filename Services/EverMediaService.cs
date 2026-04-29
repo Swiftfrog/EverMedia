@@ -239,6 +239,7 @@ public class EverMediaService
                     return false;
                 }
             }
+            // ... (SideBySide logic is here in the else block)
             else
             {
                 string medInfoPath = GetMedInfoPath(item);
@@ -448,6 +449,32 @@ public class EverMediaService
                 _logger.Warn($"[EverMedia] Service: Error deserializing {medInfoPath} in GetSavedExternalSubCount: {ex.Message}");
             }
             return 0;
+        }
+    }
+
+    public async Task<bool> MigrateToDatabaseAsync(BaseItem item, BackupDto backupData, int externalSubCount)
+    {
+        try
+        {
+            using (var db = new LiteDatabase(_dbPath))
+            {
+                var col = db.GetCollection<LiteDbRecord>("MediaInfo");
+                var record = new LiteDbRecord
+                {
+                    Id = item.InternalId,
+                    Path = item.Path ?? string.Empty,
+                    BackupData = backupData,
+                    ExternalSubCount = externalSubCount,
+                    LastUpdated = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                };
+                col.Upsert(record);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"[EverMedia] Service: MigrateToDatabaseAsync LiteDB Error: {ex.Message}");
+            return false;
         }
     }
 
