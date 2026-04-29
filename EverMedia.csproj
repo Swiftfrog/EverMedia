@@ -23,8 +23,9 @@
     <ItemGroup>
       <InputAssemblies Include="$(OutputPath)\$(AssemblyName).dll" />
       <InputAssemblies Include="$(OutputPath)\LiteDB.dll" />
+      <ILRepackLibraryPath Include="@(ReferencePathWithRefAssemblies->'%(RootDir)%(Directory)')" />
     </ItemGroup>
-    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(InputAssemblies)" OutputFile="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
+    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(InputAssemblies)" LibraryPath="@(ILRepackLibraryPath)" OutputFile="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
   </Target>
 
   <ItemGroup>
