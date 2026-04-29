@@ -324,7 +324,7 @@ public class EverMediaService
                             
                             if (raw.sqlite3_step(stmt) == raw.SQLITE_ROW)
                             {
-                                var jsonString = raw.sqlite3_column_text(stmt, 0).utf8_to_string();
+                                var jsonString = raw.sqlite3_column_text(stmt, 0);
                                 if (!string.IsNullOrEmpty(jsonString))
                                 {
                                     backupDto = _jsonSerializer.DeserializeFromString<BackupDto>(jsonString);
