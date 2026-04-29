@@ -24,7 +24,7 @@
       <InputAssemblies Include="$(OutputPath)\$(AssemblyName).dll" />
       <InputAssemblies Include="$(OutputPath)\LiteDB.dll" />
     </ItemGroup>
-    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(InputAssemblies)" OutputAssembly="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
+    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(InputAssemblies)" OutputFile="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
   </Target>
 
   <ItemGroup>
