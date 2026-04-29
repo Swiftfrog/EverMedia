@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <PackageReference Include="MediaBrowser.Server.Core" Version="4.9.1.90" />
-    <PackageReference Include="SQLitePCLRaw.core" Version="1.1.11" />
+    <PackageReference Include="SQLitePCL.pretty.core" Version="1.2.2" />
   </ItemGroup>
 
   <ItemGroup>
