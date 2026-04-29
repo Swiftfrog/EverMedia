@@ -469,7 +469,7 @@ public class EverMediaService
         public long LastUpdated { get; set; }
     }
 
-    internal class MediaSourceWithChapters
+    public class MediaSourceWithChapters
     {
         public MediaSourceInfo? MediaSourceInfo { get; set; }
         public List<ChapterInfo> Chapters { get; set; } = new List<ChapterInfo>();
