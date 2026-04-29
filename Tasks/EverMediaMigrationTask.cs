@@ -28,9 +28,9 @@ public class EverMediaMigrationTask : IScheduledTask
         _jsonSerializer = jsonSerializer;
     }
 
-    public string Name => "EverMedia: 数据库热迁移任务 (旧文件导入)";
+    public string Name => "EverMedia: import .medinfo to Database";
     public string Key => "EverMediaMigrationTask";
-    public string Description => "扫描硬盘上的旧版 .medinfo 文件并自动导入到全新的 LiteDB 数据库中（请在迁移完成后禁用此任务）。";
+    public string Description => "扫描硬盘上的 .medinfo 文件并自动导入到 LiteDB 数据库中（请在迁移完成后禁用此任务）。";
     public string Category => "EverMedia";
 
     public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
