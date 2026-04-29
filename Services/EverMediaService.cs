@@ -14,6 +14,8 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using Microsoft.Data.Sqlite;
+using MediaBrowser.Common.Configuration;
 
 namespace EverMedia.Services;
 
@@ -27,8 +29,10 @@ public class EverMediaService
     private readonly IFileSystem _fileSystem;
     private readonly IJsonSerializer _jsonSerializer;
     private readonly IServerApplicationHost _applicationHost;
+    private readonly IApplicationPaths _applicationPaths;
 
     private Plugin? _cachedPlugin;
+    private readonly string _dbPath;
 
     public EverMediaService(
         ILogManager logManager,
@@ -37,7 +41,8 @@ public class EverMediaService
         IProviderManager providerManager,
         IFileSystem fileSystem,
         IJsonSerializer jsonSerializer,
-        IServerApplicationHost applicationHost)
+        IServerApplicationHost applicationHost,
+        IApplicationPaths applicationPaths)
     {
         _logger = logManager.GetLogger(GetType().Name);
         _libraryManager = libraryManager;
@@ -46,6 +51,10 @@ public class EverMediaService
         _fileSystem = fileSystem;
         _jsonSerializer = jsonSerializer;
         _applicationHost = applicationHost;
+        _applicationPaths = applicationPaths;
+        
+        _dbPath = Path.Combine(_applicationPaths.PluginConfigurationsPath, "EverMedia.db");
+        InitializeDatabase();
     }
 
     private Plugin? GetPlugin()
@@ -56,6 +65,61 @@ public class EverMediaService
     private EverMediaConfig? GetConfiguration()
     {
         return GetPlugin()?.Configuration;
+    }
+
+    private void InitializeDatabase()
+    {
+        using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        connection.Open();
+        var command = connection.CreateCommand();
+        command.CommandText = @"
+            CREATE TABLE IF NOT EXISTS MediaInfo (
+                InternalId INTEGER PRIMARY KEY,
+                Path TEXT,
+                BackupData TEXT,
+                ExternalSubCount INTEGER,
+                LastUpdated INTEGER
+            );
+        ";
+        command.ExecuteNonQuery();
+    }
+
+    public async Task<bool> HasBackupAsync(BaseItem item)
+    {
+        var config = GetConfiguration();
+        if (config?.BackupMode == BackupMode.Centralized)
+        {
+            await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1 FROM MediaInfo WHERE InternalId = $id";
+            command.Parameters.AddWithValue("$id", item.InternalId);
+            var result = await command.ExecuteScalarAsync();
+            return result != null;
+        }
+        else
+        {
+            return _fileSystem.FileExists(GetMedInfoPath(item));
+        }
+    }
+
+    public async Task DeleteBackupAsync(BaseItem item)
+    {
+        var config = GetConfiguration();
+        if (config?.BackupMode == BackupMode.Centralized)
+        {
+            await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM MediaInfo WHERE InternalId = $id";
+            command.Parameters.AddWithValue("$id", item.InternalId);
+            await command.ExecuteNonQueryAsync();
+        }
+        else
+        {
+            string path = GetMedInfoPath(item);
+            try { _fileSystem.DeleteFile(path); } catch { }
+        }
     }
 
     // --- 核心方法：备份 MediaInfo ---
@@ -123,32 +187,49 @@ public class EverMediaService
                 }
             }
 
-            string medInfoPath = GetMedInfoPath(item);
-            var parentDir = Path.GetDirectoryName(medInfoPath);
-            if (!string.IsNullOrEmpty(parentDir) && !_fileSystem.DirectoryExists(parentDir))
-            {
-                _fileSystem.CreateDirectory(parentDir);
-            }
-
-            var plugin = GetPlugin();
-            var pluginVersionString = plugin?.Version.ToString() ?? "Unknown";
-
-            // 计算当前的外挂字幕数量
-            var allStreams = item.GetMediaStreams();
-            int externalSubCount = allStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
-            _logger.Debug($"[EverMedia] Service: Found {externalSubCount} external subtitles to save in backup for {item.Name}");
-
-            var backupData = new
+            var backupData = new BackupDto
             {
                 EmbyVersion = _applicationHost.ApplicationVersion.ToString(),
                 PluginVersion = pluginVersionString,
                 ExternalSubtitleCount = externalSubCount,
-                Data = validSourcesWithChapters
+                Data = validSourcesWithChapters.ToArray()
             };
 
-            await Task.Run(() => _jsonSerializer.SerializeToFile(backupData, medInfoPath));
+            if (config.BackupMode == BackupMode.Centralized)
+            {
+                var jsonString = _jsonSerializer.SerializeToString(backupData);
+                await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+                var command = connection.CreateCommand();
+                command.CommandText = @"
+                    INSERT INTO MediaInfo (InternalId, Path, BackupData, ExternalSubCount, LastUpdated)
+                    VALUES ($id, $path, $data, $count, $time)
+                    ON CONFLICT(InternalId) DO UPDATE SET
+                        Path = excluded.Path,
+                        BackupData = excluded.BackupData,
+                        ExternalSubCount = excluded.ExternalSubCount,
+                        LastUpdated = excluded.LastUpdated;
+                ";
+                command.Parameters.AddWithValue("$id", item.InternalId);
+                command.Parameters.AddWithValue("$path", item.Path ?? string.Empty);
+                command.Parameters.AddWithValue("$data", jsonString);
+                command.Parameters.AddWithValue("$count", externalSubCount);
+                command.Parameters.AddWithValue("$time", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                await command.ExecuteNonQueryAsync();
+                _logger.Info($"[EverMedia] Service: Backup completed (Centralized DB) for item: {item.Name ?? item.Path}");
+            }
+            else
+            {
+                string medInfoPath = GetMedInfoPath(item);
+                var parentDir = Path.GetDirectoryName(medInfoPath);
+                if (!string.IsNullOrEmpty(parentDir) && !_fileSystem.DirectoryExists(parentDir))
+                {
+                    _fileSystem.CreateDirectory(parentDir);
+                }
+                await Task.Run(() => _jsonSerializer.SerializeToFile(backupData, medInfoPath));
+                _logger.Info($"[EverMedia] Service: Backup completed for item: {item.Name ?? item.Path}. File written: {medInfoPath}");
+            }
 
-            _logger.Info($"[EverMedia] Service: Backup completed for item: {item.Name ?? item.Path}. File written: {medInfoPath}");
             return true;
         }
         catch (Exception ex)
@@ -173,25 +254,49 @@ public class EverMediaService
     
         try
         {
-            string medInfoPath = GetMedInfoPath(item);
-            _logger.Debug($"[EverMedia] Service: Looking for medinfo file: {medInfoPath}");
-    
-            if (!_fileSystem.FileExists(medInfoPath))
-            {
-                _logger.Info($"[EverMedia] Service: No medinfo file found for item: {item.Name ?? item.Path}. Path checked: {medInfoPath}");
-                return Task.FromResult(false);
-            }
-    
             BackupDto? backupDto = null;
-            try
+            string medInfoPath = string.Empty;
+
+            if (config.BackupMode == BackupMode.Centralized)
             {
-                backupDto = _jsonSerializer.DeserializeFromFile<BackupDto>(medInfoPath);
+                await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+                var command = connection.CreateCommand();
+                command.CommandText = "SELECT BackupData FROM MediaInfo WHERE InternalId = $id";
+                command.Parameters.AddWithValue("$id", item.InternalId);
+                var result = await command.ExecuteScalarAsync();
+                if (result is string jsonString)
+                {
+                    backupDto = _jsonSerializer.DeserializeFromString<BackupDto>(jsonString);
+                }
+
+                if (backupDto == null)
+                {
+                    _logger.Info($"[EverMedia] Service: No medinfo found in DB for item: {item.Name ?? item.Path}.");
+                    return false;
+                }
             }
-            catch (Exception ex)
+            else
             {
-                _logger.Error($"[EverMedia] Service: Error deserializing medinfo file {medInfoPath} into BackupDto: {ex.Message}");
-                _logger.Debug(ex.StackTrace);
-                return Task.FromResult(false);
+                medInfoPath = GetMedInfoPath(item);
+                _logger.Debug($"[EverMedia] Service: Looking for medinfo file: {medInfoPath}");
+
+                if (!_fileSystem.FileExists(medInfoPath))
+                {
+                    _logger.Info($"[EverMedia] Service: No medinfo file found for item: {item.Name ?? item.Path}. Path checked: {medInfoPath}");
+                    return false;
+                }
+
+                try
+                {
+                    backupDto = _jsonSerializer.DeserializeFromFile<BackupDto>(medInfoPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error($"[EverMedia] Service: Error deserializing medinfo file {medInfoPath} into BackupDto: {ex.Message}");
+                    _logger.Debug(ex.StackTrace);
+                    return false;
+                }
             }
     
             if (backupDto == null || backupDto.Data == null || !backupDto.Data.Any())
@@ -246,14 +351,14 @@ public class EverMediaService
             _itemRepository.SaveChapters(item.InternalId, true, chaptersToRestore);
             _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataImport, null);
     
-            _logger.Info($"[EverMedia] Service: Restore completed successfully for item: {item.Name ?? item.Path}. File used: {medInfoPath}");
-            return Task.FromResult(true);
+            _logger.Info($"[EverMedia] Service: Restore completed successfully for item: {item.Name ?? item.Path}.");
+            return true;
         }
         catch (Exception ex)
         {
             _logger.Error($"[EverMedia] Service: Error during RestoreAsync for item {item.Name ?? item.Path}: {ex.Message}");
             _logger.Debug(ex.StackTrace);
-            return Task.FromResult(false);
+            return false;
         }
     }
 
@@ -267,70 +372,52 @@ public class EverMediaService
             return Path.Combine(fallbackDir, item.Id.ToString() + ".medinfo");
         }
 
-        var config = GetConfiguration() ?? new EverMediaConfig();
         string fileName = Path.GetFileNameWithoutExtension(item.Path) + ".medinfo";
-
-        if (config.BackupMode == BackupMode.Centralized && !string.IsNullOrWhiteSpace(config.CentralizedRootPath))
-        {
-            var libraryOptions = _libraryManager.GetLibraryOptions(item);
-            if (libraryOptions?.PathInfos != null)
-            {
-                var matchingPathInfo = libraryOptions.PathInfos
-                    .FirstOrDefault(pi => !string.IsNullOrEmpty(pi.Path) &&
-                                          item.Path.StartsWith(pi.Path, StringComparison.OrdinalIgnoreCase));
-
-                if (matchingPathInfo != null)
-                {
-                    string baseLibraryPath = matchingPathInfo.Path;
-                    string relativeDir = item.ContainingFolderPath;
-
-                    if (relativeDir.Length > baseLibraryPath.Length)
-                    {
-                        relativeDir = relativeDir.Substring(baseLibraryPath.Length)
-                                            .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                    }
-                    else
-                    {
-                        relativeDir = string.Empty;
-                    }
-
-                    string targetDir = string.IsNullOrEmpty(relativeDir)
-                        ? config.CentralizedRootPath
-                        : Path.Combine(config.CentralizedRootPath, relativeDir);
-
-                    return Path.Combine(targetDir, fileName);
-                }
-            }
-        }
         return Path.Combine(item.ContainingFolderPath, fileName);
     }
 
     // --- 从 .medinfo 读取外挂字幕计数 ---
     public int GetSavedExternalSubCount(BaseItem item)
     {
-        string medInfoPath = GetMedInfoPath(item);
-        if (!_fileSystem.FileExists(medInfoPath))
+        var config = GetConfiguration();
+        if (config?.BackupMode == BackupMode.Centralized)
         {
-            _logger.Debug($"[EverMedia] Service: GetSavedExternalSubCount: No medinfo file found for {item.Name}. Returning 0.");
-            return 0; // 没有备份文件，返回 0 (或 -1，如果你想区分)
-        }
-
-        try
-        {
-            var backupDto = _jsonSerializer.DeserializeFromFile<BackupDto>(medInfoPath);
-            if (backupDto != null)
+            using var connection = new SqliteConnection($"Data Source={_dbPath}");
+            connection.Open();
+            var command = connection.CreateCommand();
+            command.CommandText = "SELECT ExternalSubCount FROM MediaInfo WHERE InternalId = $id";
+            command.Parameters.AddWithValue("$id", item.InternalId);
+            var result = command.ExecuteScalar();
+            if (result != null && int.TryParse(result.ToString(), out int count))
             {
-                _logger.Debug($"[EverMedia] Service: GetSavedExternalSubCount: Found {backupDto.ExternalSubtitleCount} saved external subs in {medInfoPath}.");
-                return backupDto.ExternalSubtitleCount;
+                return count;
             }
+            return 0;
         }
-        catch (Exception ex)
+        else
         {
-            _logger.Warn($"[EverMedia] Service: Error deserializing {medInfoPath} in GetSavedExternalSubCount (maybe old version?): {ex.Message}");
+            string medInfoPath = GetMedInfoPath(item);
+            if (!_fileSystem.FileExists(medInfoPath))
+            {
+                _logger.Debug($"[EverMedia] Service: GetSavedExternalSubCount: No medinfo file found for {item.Name}. Returning 0.");
+                return 0;
+            }
+
+            try
+            {
+                var backupDto = _jsonSerializer.DeserializeFromFile<BackupDto>(medInfoPath);
+                if (backupDto != null)
+                {
+                    _logger.Debug($"[EverMedia] Service: GetSavedExternalSubCount: Found {backupDto.ExternalSubtitleCount} saved external subs in {medInfoPath}.");
+                    return backupDto.ExternalSubtitleCount;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"[EverMedia] Service: Error deserializing {medInfoPath} in GetSavedExternalSubCount: {ex.Message}");
+            }
+            return 0;
         }
-        
-        _logger.Warn($"[EverMedia] Service: GetSavedExternalSubCount: Failed to read or parse {medInfoPath}. Returning 0.");
-        return 0; 
     }
 
     private class BackupDto

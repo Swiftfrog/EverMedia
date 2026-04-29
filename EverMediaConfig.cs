@@ -21,9 +21,10 @@ public class EverMediaConfig : EditableOptionsBase
     [Description("选择 .medinfo 文件的存储方式。SideBySide: 和.strm 文件放在同一目录下；Centralized: 存放在指定的目录中。")]
     public BackupMode BackupMode { get; set; } = BackupMode.SideBySide;
 
-    [DisplayName("存储路径")]
-    [Description("当选择“Centralized”模式时，用于存放 .medinfo 文件的文件夹路径。")]
-    [EditFolderPicker]
+    // 弃用：不再需要手动设置集中存储路径，统一存放在 Emby 插件数据目录下
+    // [DisplayName("存储路径")]
+    // [Description("当选择“Centralized”模式时，用于存放 .medinfo 文件的文件夹路径。")]
+    // [EditFolderPicker]
     public string CentralizedRootPath { get; set; } = "";
 
     // [DisplayName("启用孤立文件清理");

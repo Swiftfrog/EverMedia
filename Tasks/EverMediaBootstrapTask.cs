@@ -222,17 +222,17 @@ public class EverMediaBootstrapTask : IScheduledTask
 
                         _logger.Debug($"[EverMedia] BootstrapTask: Processing .strm file: {item.Path} (DateLastSaved: {item.DateLastSaved:O})");
 
-                        // 检查是否存在 .medinfo 文件
-                        string medInfoPath = _everMediaService.GetMedInfoPath(item);
+                        // 检查是否存在备份
+                        bool hasBackup = await _everMediaService.HasBackupAsync(item);
                         bool hasMediaInfo = item.GetMediaStreams()?.Any(i => i.Type == MediaStreamType.Video || i.Type == MediaStreamType.Audio) ?? false;
 
-                        if (_fileSystem.FileExists(medInfoPath))
+                        if (hasBackup)
                         {
                             if (!hasMediaInfo)
                             {
-                                _logger.Info($"[EverMedia] BootstrapTask: Found .medinfo file but no MediaInfo for {item.Path}. Attempting restore.");
+                                _logger.Info($"[EverMedia] BootstrapTask: Found backup but no MediaInfo for {item.Path}. Attempting restore.");
                                 
-                                // 存在 .medinfo 文件且媒体信息丢失：尝试恢复 (自愈)
+                                // 存在备份且媒体信息丢失：尝试恢复 (自愈)
                                 var restoreResult = await _everMediaService.RestoreAsync(item);
                                 if (restoreResult)
                                 {
@@ -252,8 +252,8 @@ public class EverMediaBootstrapTask : IScheduledTask
                                 
                                 if (currentSubCount != savedSubCount)
                                 {
-                                    _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Deleting medinfo and triggering probe.");
-                                    try { _fileSystem.DeleteFile(medInfoPath); } catch { }
+                                    _logger.Info($"[EverMedia] BootstrapTask: Subtitle change detected for {item.Path}. Deleting backup and triggering probe.");
+                                    try { await _everMediaService.DeleteBackupAsync(item); } catch { }
                                     
                                     await ApplyRateLimitAsync();
                                     await item.RefreshMetadata(refreshOptions, cancellationToken);
@@ -268,13 +268,13 @@ public class EverMediaBootstrapTask : IScheduledTask
                         }
                         else
                         {
-                            _logger.Debug($"[EverMedia] BootstrapTask: No .medinfo file found for {item.Path}.");
+                            _logger.Debug($"[EverMedia] BootstrapTask: No backup found for {item.Path}.");
                             
-                            // 不存在 .medinfo 文件：
+                            // 不存在备份：
                             if (!hasMediaInfo)
                             {
-                                _logger.Info($"[EverMedia] BootstrapTask: No MediaInfo found for {item.Path} and no .medinfo file. Attempting probe.");
-                                // 没有 MediaStreams 且没有 .medinfo 文件：触发探测
+                                _logger.Info($"[EverMedia] BootstrapTask: No MediaInfo found for {item.Path} and no backup. Attempting probe.");
+                                // 没有 MediaStreams 且没有备份：触发探测
                                 // 使用预先创建的 MetadataRefreshOptions 来触发探测
                                 await ApplyRateLimitAsync();
                                 await item.RefreshMetadata(refreshOptions, cancellationToken);
@@ -285,8 +285,8 @@ public class EverMediaBootstrapTask : IScheduledTask
                             }
                             else
                             {
-                                // 有 MediaInfo 但没有 .medinfo → 立即备份
-                                _logger.Info($"[EverMedia] BootstrapTask: MediaInfo exists for {item.Path} but no .medinfo file. Backing up now.");
+                                // 有 MediaInfo 但没有备份 → 立即备份
+                                _logger.Info($"[EverMedia] BootstrapTask: MediaInfo exists for {item.Path} but no backup. Backing up now.");
                                 var backupResult = await _everMediaService.BackupAsync(item);
                                 if (backupResult)
                                 {

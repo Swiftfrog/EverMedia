@@ -115,8 +115,7 @@ public class EverMediaEventListener : IAsyncDisposable
 
             // _logger.Debug($"[EverMedia] Worker-{workerId}: Processing '{item.Name}'");
 
-            string medInfoPath = _everMediaService.GetMedInfoPath(item);
-            bool medInfoExists = _fileSystem.FileExists(medInfoPath);
+            bool medInfoExists = await _everMediaService.HasBackupAsync(item);
             
             var mediaStreams = item.GetMediaStreams();
             var hasVideoOrAudio = mediaStreams?.Any(s => s.Type == MediaStreamType.Video || s.Type == MediaStreamType.Audio) == true;
@@ -130,7 +129,7 @@ public class EverMediaEventListener : IAsyncDisposable
                 if (currentExternalCount != savedExternalCount)
                 {
                     _logger.Info($"[EverMedia] Worker-{workerId}: Subtitle mismatch for {item.Name} (Saved: {savedExternalCount}, Current: {currentExternalCount}). Probing.");
-                    try { _fileSystem.DeleteFile(medInfoPath); } catch { }
+                    try { await _everMediaService.DeleteBackupAsync(item); } catch { }
                     await HandleProbeWithRetryAsync(item, config, workerId);
                     return; // 结束，等待探测完成后的事件
                 }
