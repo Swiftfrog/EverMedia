@@ -14,7 +14,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Microsoft.Data.Sqlite;
+using SQLitePCL;
 using MediaBrowser.Common.Configuration;
 
 namespace EverMedia.Services;
@@ -69,19 +69,35 @@ public class EverMediaService
 
     private void InitializeDatabase()
     {
-        using var connection = new SqliteConnection($"Data Source={_dbPath}");
-        connection.Open();
-        var command = connection.CreateCommand();
-        command.CommandText = @"
-            CREATE TABLE IF NOT EXISTS MediaInfo (
-                InternalId INTEGER PRIMARY KEY,
-                Path TEXT,
-                BackupData TEXT,
-                ExternalSubCount INTEGER,
-                LastUpdated INTEGER
-            );
-        ";
-        command.ExecuteNonQuery();
+        sqlite3? db = null;
+        try
+        {
+            int rc = raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READWRITE | raw.SQLITE_OPEN_CREATE, null);
+            if (rc != raw.SQLITE_OK)
+            {
+                _logger.Error($"[EverMedia] Service: Failed to open database. SQLite error code: {rc}");
+                return;
+            }
+
+            string createSql = @"
+                CREATE TABLE IF NOT EXISTS MediaInfo (
+                    InternalId INTEGER PRIMARY KEY,
+                    Path TEXT,
+                    BackupData TEXT,
+                    ExternalSubCount INTEGER,
+                    LastUpdated INTEGER
+                );";
+            
+            rc = raw.sqlite3_exec(db, createSql);
+            if (rc != raw.SQLITE_OK)
+            {
+                _logger.Error($"[EverMedia] Service: Failed to create table. SQLite error code: {rc}");
+            }
+        }
+        finally
+        {
+            if (db != null) raw.sqlite3_close_v2(db);
+        }
     }
 
     public async Task<bool> HasBackupAsync(BaseItem item)
@@ -89,13 +105,21 @@ public class EverMediaService
         var config = GetConfiguration();
         if (config?.BackupMode == BackupMode.Centralized)
         {
-            await using var connection = new SqliteConnection($"Data Source={_dbPath}");
-            await connection.OpenAsync();
-            var command = connection.CreateCommand();
-            command.CommandText = "SELECT 1 FROM MediaInfo WHERE InternalId = $id";
-            command.Parameters.AddWithValue("$id", item.InternalId);
-            var result = await command.ExecuteScalarAsync();
-            return result != null;
+            sqlite3? db = null;
+            sqlite3_stmt? stmt = null;
+            try
+            {
+                if (raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READONLY, null) != raw.SQLITE_OK) return false;
+                if (raw.sqlite3_prepare_v2(db, "SELECT 1 FROM MediaInfo WHERE InternalId = ?", out stmt) != raw.SQLITE_OK) return false;
+                
+                raw.sqlite3_bind_int64(stmt, 1, item.InternalId);
+                return raw.sqlite3_step(stmt) == raw.SQLITE_ROW;
+            }
+            finally
+            {
+                if (stmt != null) raw.sqlite3_finalize(stmt);
+                if (db != null) raw.sqlite3_close_v2(db);
+            }
         }
         else
         {
@@ -108,12 +132,21 @@ public class EverMediaService
         var config = GetConfiguration();
         if (config?.BackupMode == BackupMode.Centralized)
         {
-            await using var connection = new SqliteConnection($"Data Source={_dbPath}");
-            await connection.OpenAsync();
-            var command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM MediaInfo WHERE InternalId = $id";
-            command.Parameters.AddWithValue("$id", item.InternalId);
-            await command.ExecuteNonQueryAsync();
+            sqlite3? db = null;
+            sqlite3_stmt? stmt = null;
+            try
+            {
+                if (raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READWRITE, null) != raw.SQLITE_OK) return;
+                if (raw.sqlite3_prepare_v2(db, "DELETE FROM MediaInfo WHERE InternalId = ?", out stmt) != raw.SQLITE_OK) return;
+                
+                raw.sqlite3_bind_int64(stmt, 1, item.InternalId);
+                raw.sqlite3_step(stmt);
+            }
+            finally
+            {
+                if (stmt != null) raw.sqlite3_finalize(stmt);
+                if (db != null) raw.sqlite3_close_v2(db);
+            }
         }
         else
         {
@@ -206,25 +239,37 @@ public class EverMediaService
             if (config.BackupMode == BackupMode.Centralized)
             {
                 var jsonString = _jsonSerializer.SerializeToString(backupData);
-                await using var connection = new SqliteConnection($"Data Source={_dbPath}");
-                await connection.OpenAsync();
-                var command = connection.CreateCommand();
-                command.CommandText = @"
-                    INSERT INTO MediaInfo (InternalId, Path, BackupData, ExternalSubCount, LastUpdated)
-                    VALUES ($id, $path, $data, $count, $time)
-                    ON CONFLICT(InternalId) DO UPDATE SET
-                        Path = excluded.Path,
-                        BackupData = excluded.BackupData,
-                        ExternalSubCount = excluded.ExternalSubCount,
-                        LastUpdated = excluded.LastUpdated;
-                ";
-                command.Parameters.AddWithValue("$id", item.InternalId);
-                command.Parameters.AddWithValue("$path", item.Path ?? string.Empty);
-                command.Parameters.AddWithValue("$data", jsonString);
-                command.Parameters.AddWithValue("$count", externalSubCount);
-                command.Parameters.AddWithValue("$time", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-                await command.ExecuteNonQueryAsync();
-                _logger.Info($"[EverMedia] Service: Backup completed (Centralized DB) for item: {item.Name ?? item.Path}");
+                sqlite3? db = null;
+                sqlite3_stmt? stmt = null;
+                try
+                {
+                    if (raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READWRITE, null) != raw.SQLITE_OK) return false;
+                    
+                    string sql = @"
+                        INSERT INTO MediaInfo (InternalId, Path, BackupData, ExternalSubCount, LastUpdated)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(InternalId) DO UPDATE SET
+                            Path = excluded.Path,
+                            BackupData = excluded.BackupData,
+                            ExternalSubCount = excluded.ExternalSubCount,
+                            LastUpdated = excluded.LastUpdated;";
+                            
+                    if (raw.sqlite3_prepare_v2(db, sql, out stmt) != raw.SQLITE_OK) return false;
+                    
+                    raw.sqlite3_bind_int64(stmt, 1, item.InternalId);
+                    raw.sqlite3_bind_text(stmt, 2, item.Path ?? string.Empty);
+                    raw.sqlite3_bind_text(stmt, 3, jsonString);
+                    raw.sqlite3_bind_int(stmt, 4, externalSubCount);
+                    raw.sqlite3_bind_int64(stmt, 5, System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    
+                    raw.sqlite3_step(stmt);
+                    _logger.Info($"[EverMedia] Service: Backup completed (Centralized DB) for item: {item.Name ?? item.Path}");
+                }
+                finally
+                {
+                    if (stmt != null) raw.sqlite3_finalize(stmt);
+                    if (db != null) raw.sqlite3_close_v2(db);
+                }
             }
             else
             {
@@ -267,15 +312,31 @@ public class EverMediaService
 
             if (config.BackupMode == BackupMode.Centralized)
             {
-                await using var connection = new SqliteConnection($"Data Source={_dbPath}");
-                await connection.OpenAsync();
-                var command = connection.CreateCommand();
-                command.CommandText = "SELECT BackupData FROM MediaInfo WHERE InternalId = $id";
-                command.Parameters.AddWithValue("$id", item.InternalId);
-                var result = await command.ExecuteScalarAsync();
-                if (result is string jsonString)
+                sqlite3? db = null;
+                sqlite3_stmt? stmt = null;
+                try
                 {
-                    backupDto = _jsonSerializer.DeserializeFromString<BackupDto>(jsonString);
+                    if (raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READONLY, null) == raw.SQLITE_OK)
+                    {
+                        if (raw.sqlite3_prepare_v2(db, "SELECT BackupData FROM MediaInfo WHERE InternalId = ?", out stmt) == raw.SQLITE_OK)
+                        {
+                            raw.sqlite3_bind_int64(stmt, 1, item.InternalId);
+                            
+                            if (raw.sqlite3_step(stmt) == raw.SQLITE_ROW)
+                            {
+                                var jsonString = raw.sqlite3_column_text(stmt, 0).utf8_to_string();
+                                if (!string.IsNullOrEmpty(jsonString))
+                                {
+                                    backupDto = _jsonSerializer.DeserializeFromString<BackupDto>(jsonString);
+                                }
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (stmt != null) raw.sqlite3_finalize(stmt);
+                    if (db != null) raw.sqlite3_close_v2(db);
                 }
 
                 if (backupDto == null)
@@ -390,17 +451,26 @@ public class EverMediaService
         var config = GetConfiguration();
         if (config?.BackupMode == BackupMode.Centralized)
         {
-            using var connection = new SqliteConnection($"Data Source={_dbPath}");
-            connection.Open();
-            var command = connection.CreateCommand();
-            command.CommandText = "SELECT ExternalSubCount FROM MediaInfo WHERE InternalId = $id";
-            command.Parameters.AddWithValue("$id", item.InternalId);
-            var result = command.ExecuteScalar();
-            if (result != null && int.TryParse(result.ToString(), out int count))
+            sqlite3? db = null;
+            sqlite3_stmt? stmt = null;
+            try
             {
-                return count;
+                if (raw.sqlite3_open_v2(_dbPath, out db, raw.SQLITE_OPEN_READONLY, null) != raw.SQLITE_OK) return 0;
+                if (raw.sqlite3_prepare_v2(db, "SELECT ExternalSubCount FROM MediaInfo WHERE InternalId = ?", out stmt) != raw.SQLITE_OK) return 0;
+                
+                raw.sqlite3_bind_int64(stmt, 1, item.InternalId);
+                
+                if (raw.sqlite3_step(stmt) == raw.SQLITE_ROW)
+                {
+                    return raw.sqlite3_column_int(stmt, 0);
+                }
+                return 0;
             }
-            return 0;
+            finally
+            {
+                if (stmt != null) raw.sqlite3_finalize(stmt);
+                if (db != null) raw.sqlite3_close_v2(db);
+            }
         }
         else
         {
