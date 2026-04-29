@@ -187,6 +187,14 @@ public class EverMediaService
                 }
             }
 
+            var plugin = GetPlugin();
+            var pluginVersionString = plugin?.Version.ToString() ?? "Unknown";
+
+            // 计算当前的外挂字幕数量
+            var allStreams = item.GetMediaStreams();
+            int externalSubCount = allStreams?.Count(s => s.Type == MediaStreamType.Subtitle && s.IsExternal) ?? 0;
+            _logger.Debug($"[EverMedia] Service: Found {externalSubCount} external subtitles to save in backup for {item.Name}");
+
             var backupData = new BackupDto
             {
                 EmbyVersion = _applicationHost.ApplicationVersion.ToString(),
@@ -241,7 +249,7 @@ public class EverMediaService
     }
 
     // --- 恢复 MediaInfo ---
-    public Task<bool> RestoreAsync(BaseItem item)
+    public async Task<bool> RestoreAsync(BaseItem item)
     {
         _logger.Info($"[EverMedia] Service: Starting RestoreAsync for item: {item.Name ?? item.Path} (ID: {item.Id})");
     
@@ -249,7 +257,7 @@ public class EverMediaService
         if (config == null)
         {
             _logger.Error("[EverMedia] Service: Failed to get plugin configuration for RestoreAsync.");
-            return Task.FromResult(false);
+            return false;
         }
     
         try
@@ -302,7 +310,7 @@ public class EverMediaService
             if (backupDto == null || backupDto.Data == null || !backupDto.Data.Any())
             {
                 _logger.Warn($"[EverMedia] Service: No data found in medinfo file {medInfoPath}.");
-                return Task.FromResult(false);
+                return false;
             }
     
             _logger.Debug($"[EverMedia] Service: Restoring from EmbyVersion: {backupDto.EmbyVersion ?? "Unknown"}, PluginVersion: {backupDto.PluginVersion ?? "Unknown"}");
@@ -314,7 +322,7 @@ public class EverMediaService
             if (mediaSourceInfo == null)
             {
                 _logger.Warn($"[EverMedia] Service: MediaSourceInfo in medinfo file {medInfoPath} is null.");
-                return Task.FromResult(false);
+                return false;
             }
     
             item.Size = mediaSourceInfo.Size.GetValueOrDefault();
