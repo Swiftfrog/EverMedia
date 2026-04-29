@@ -15,9 +15,18 @@
 
   <ItemGroup>
     <PackageReference Include="MediaBrowser.Server.Core" Version="4.9.1.90" />
-    <PackageReference Include="SQLitePCL.pretty.core" Version="1.2.2" ExcludeAssets="Runtime" />
-    <PackageReference Include="SQLitePCLRaw.core" Version="1.1.11" ExcludeAssets="Runtime" />
+    <PackageReference Include="LiteDB" Version="5.0.19" />
+    <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.34.2" PrivateAssets="All" />
   </ItemGroup>
+
+  <Target Name="ILRepacker" AfterTargets="Build">
+    <ItemGroup>
+      <InputAssemblies Include="$(OutputPath)\$(AssemblyName).dll" />
+      <InputAssemblies Include="$(OutputPath)\LiteDB.dll" />
+      <ILRepackLibraryPath Include="@(ReferencePathWithRefAssemblies->'%(RootDir)%(Directory)')" />
+    </ItemGroup>
+    <ILRepack Parallel="true" Internalize="true" InputAssemblies="@(InputAssemblies)" LibraryPath="@(ILRepackLibraryPath)" OutputFile="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
+  </Target>
 
   <ItemGroup>
     <EmbeddedResource Include="EverMediaLogo.png" />
