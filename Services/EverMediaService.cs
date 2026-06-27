@@ -12,6 +12,7 @@ using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.Serialization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using LiteDB;
@@ -33,6 +34,7 @@ public class EverMediaService
 
     private Plugin? _cachedPlugin;
     private readonly string _dbPath;
+    private readonly SemaphoreSlim _databaseLock = new(1, 1);
 
     public EverMediaService(
         ILogManager logManager,
@@ -83,28 +85,61 @@ public class EverMediaService
         }
     }
 
+    private async Task<T> WithDatabaseAsync<T>(Func<LiteDatabase, T> action)
+    {
+        await _databaseLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            using var db = new LiteDatabase(_dbPath);
+            return action(db);
+        }
+        finally
+        {
+            _databaseLock.Release();
+        }
+    }
+
+    private T WithDatabase<T>(Func<LiteDatabase, T> action)
+    {
+        _databaseLock.Wait();
+        try
+        {
+            using var db = new LiteDatabase(_dbPath);
+            return action(db);
+        }
+        finally
+        {
+            _databaseLock.Release();
+        }
+    }
+
     public async Task<bool> HasBackupAsync(BaseItem item)
     {
         var config = GetConfiguration();
         if (config?.BackupMode == BackupMode.Centralized)
         {
-            try
-            {
-                using (var db = new LiteDatabase(_dbPath))
-                {
-                    var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                    return col.Exists(x => x.Id == item.InternalId);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error($"[EverMedia] Service: HasBackupAsync LiteDB Error: {ex.Message}");
-                return false;
-            }
+            return await HasDatabaseBackupAsync(item).ConfigureAwait(false);
         }
         else
         {
             return _fileSystem.FileExists(GetMedInfoPath(item));
+        }
+    }
+
+    public async Task<bool> HasDatabaseBackupAsync(BaseItem item)
+    {
+        try
+        {
+            return await WithDatabaseAsync(db =>
+            {
+                var col = db.GetCollection<LiteDbRecord>("MediaInfo");
+                return col.Exists(x => x.Id == item.InternalId);
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"[EverMedia] Service: HasDatabaseBackupAsync LiteDB Error: {ex.Message}");
+            return false;
         }
     }
 
@@ -115,11 +150,11 @@ public class EverMediaService
         {
             try
             {
-                using (var db = new LiteDatabase(_dbPath))
+                await WithDatabaseAsync(db =>
                 {
                     var col = db.GetCollection<LiteDbRecord>("MediaInfo");
-                    col.Delete(item.InternalId);
-                }
+                    return col.Delete(item.InternalId);
+                }).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -218,7 +253,7 @@ public class EverMediaService
             {
                 try
                 {
-                    using (var db = new LiteDatabase(_dbPath))
+                    await WithDatabaseAsync(db =>
                     {
                         var col = db.GetCollection<LiteDbRecord>("MediaInfo");
                         var record = new LiteDbRecord
@@ -229,9 +264,10 @@ public class EverMediaService
                             ExternalSubCount = externalSubCount,
                             LastUpdated = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                         };
-                        col.Upsert(record);
-                        _logger.Info($"[EverMedia] Service: Backup completed (LiteDB) for item: {item.Name ?? item.Path}");
-                    }
+                        return col.Upsert(record);
+                    }).ConfigureAwait(false);
+
+                    _logger.Info($"[EverMedia] Service: Backup completed (LiteDB) for item: {item.Name ?? item.Path}");
                 }
                 catch (Exception ex)
                 {
@@ -283,15 +319,12 @@ public class EverMediaService
             {
                 try
                 {
-                    using (var db = new LiteDatabase(_dbPath))
+                    backupDto = await WithDatabaseAsync(db =>
                     {
                         var col = db.GetCollection<LiteDbRecord>("MediaInfo");
                         var record = col.FindById(item.InternalId);
-                        if (record != null)
-                        {
-                            backupDto = record.BackupData;
-                        }
-                    }
+                        return record?.BackupData;
+                    }).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -413,12 +446,12 @@ public class EverMediaService
         {
             try
             {
-                using (var db = new LiteDatabase(_dbPath))
+                return WithDatabase(db =>
                 {
                     var col = db.GetCollection<LiteDbRecord>("MediaInfo");
                     var record = col.FindById(item.InternalId);
                     return record?.ExternalSubCount ?? 0;
-                }
+                });
             }
             catch (Exception ex)
             {
@@ -456,7 +489,7 @@ public class EverMediaService
     {
         try
         {
-            using (var db = new LiteDatabase(_dbPath))
+            await WithDatabaseAsync(db =>
             {
                 var col = db.GetCollection<LiteDbRecord>("MediaInfo");
                 var record = new LiteDbRecord
@@ -467,9 +500,10 @@ public class EverMediaService
                     ExternalSubCount = externalSubCount,
                     LastUpdated = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                 };
-                col.Upsert(record);
-                return true;
-            }
+                return col.Upsert(record);
+            }).ConfigureAwait(false);
+
+            return true;
         }
         catch (Exception ex)
         {

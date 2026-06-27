@@ -19,15 +19,19 @@
     <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.34.2" PrivateAssets="All" ExcludeAssets="build;buildTransitive;buildMultitargeting" GeneratePathProperty="true" />
   </ItemGroup>
 
-  <UsingTask TaskName="ILRepack" AssemblyFile="$(PkgILRepack_Lib_MSBuild_Task)\build\ILRepack.Lib.MSBuild.Task.dll" />
+  <PropertyGroup>
+    <ILRepackTaskAssembly>$([System.IO.Path]::Combine('$(PkgILRepack_Lib_MSBuild_Task)', 'build', 'ILRepack.Lib.MSBuild.Task.dll'))</ILRepackTaskAssembly>
+  </PropertyGroup>
+
+  <UsingTask TaskName="ILRepack" AssemblyFile="$(ILRepackTaskAssembly)" />
 
   <Target Name="ILRepacker" AfterTargets="Build">
     <ItemGroup>
-      <InputAssemblies Include="$(OutputPath)\$(AssemblyName).dll" />
-      <InputAssemblies Include="$(OutputPath)\LiteDB.dll" />
+      <InputAssemblies Include="$(OutputPath)$(AssemblyName).dll" />
+      <InputAssemblies Include="$(OutputPath)LiteDB.dll" />
       <ILRepackLibraryPath Include="@(ReferencePathWithRefAssemblies->'%(RootDir)%(Directory)')" />
     </ItemGroup>
-    <ILRepack Parallel="true" Internalize="true" DebugInfo="false" InputAssemblies="@(InputAssemblies)" LibraryPath="@(ILRepackLibraryPath)" OutputFile="$(OutputPath)\$(AssemblyName).dll" TargetKind="Dll" />
+    <ILRepack Parallel="true" Internalize="true" DebugInfo="false" InputAssemblies="@(InputAssemblies)" LibraryPath="@(ILRepackLibraryPath)" OutputFile="$(OutputPath)$(AssemblyName).dll" TargetKind="Dll" />
   </Target>
 
   <ItemGroup>

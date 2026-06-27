@@ -53,7 +53,7 @@ public class EverMediaMigrationTask : IScheduledTask
             cancellationToken.ThrowIfCancellationRequested();
             var item = items[i];
 
-            if (await _everMediaService.HasBackupAsync(item))
+            if (await _everMediaService.HasDatabaseBackupAsync(item))
             {
                 alreadyInDbCount++;
                 progress.Report((i + 1.0) / total * 100);
