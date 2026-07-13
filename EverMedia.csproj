@@ -5,7 +5,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>EverMedia</AssemblyName>
     <RootNamespace>EverMedia</RootNamespace>
-    <Version>26.04.29</Version>
+    <Version>26.06.27</Version>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
